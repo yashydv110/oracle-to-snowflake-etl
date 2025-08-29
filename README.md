@@ -53,12 +53,17 @@ oracle-to-snowflake-etl/
 ├─ .gitignore
 ├─ .env                  # not committed
 ├─ data/
-│  └─ ads_data.csv       # generated (optional to commit)
-├─ notebooks/
-│  └─ etl_pipeline.ipynb
+│  └─ ads_data.csv       # generated 
+├─ analytics_reports/
+│  └─ analytics_report.ipynb
 └─ scripts/
-   └─ generate_data.py
+   ├─ generate_ads_data.py
+   ├─ insert_ads_data.py
+   ├─ oracle_to_snowflake.py
+   └─ transform_curated.py
 ```
+## Recommended Repo Structure
+
 
 ### .gitignore (important)
 ```
