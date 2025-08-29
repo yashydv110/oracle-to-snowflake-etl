@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import random
+import os
 from datetime import datetime, timedelta
 
 # Parameters
@@ -40,9 +41,18 @@ df = pd.DataFrame(rows, columns=[
     "impressions", "clicks", "spend", "conversions"
 ])
 
-# Save to CSV
-df.to_csv("ads_data.csv", index=False)
+# Ensure data folder exists
+os.makedirs("../data", exist_ok=True)
 
-print("Synthetic dataset generated: ads_data.csv")
+# CSV filename logic with suffix
+base_name = f"ads_data_{datetime.today().strftime('%Y-%m-%d')}"
+suffix = "A"
+while os.path.exists(f"../data/{base_name}{suffix}.csv"):
+    suffix = chr(ord(suffix) + 1)  # next letter
+csv_filename = f"../data/{base_name}{suffix}.csv"
+
+# Save CSV
+df.to_csv(csv_filename, index=False)
+print(f"Synthetic dataset generated: {csv_filename}")
 print(df.head())
 print(f"\nTotal rows: {len(df)}")

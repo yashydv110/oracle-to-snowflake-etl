@@ -2,26 +2,27 @@ import os
 import snowflake.connector
 from dotenv import load_dotenv
 
-# Load env variables
+# Load environment variables
 load_dotenv()
 
-# Connect to Snowflake
+# Snowflake connection
 sconn = snowflake.connector.connect(
     user=os.getenv("SNOWFLAKE_USER"),
     password=os.getenv("SNOWFLAKE_PASSWORD"),
     account=os.getenv("SNOWFLAKE_ACCOUNT"),
     warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
     database=os.getenv("SNOWFLAKE_DATABASE"),
-    schema=os.getenv("SNOWFLAKE_SCHEMA"),
+    schema=os.getenv("SNOWFLAKE_SCHEMA"),  # staging initially
 )
 cur = sconn.cursor()
 
-# Create curated schema if not exists
-cur.execute("CREATE SCHEMA IF NOT EXISTS CURATED")
+# Ensure production and public schemas exist
+cur.execute("CREATE SCHEMA IF NOT EXISTS PRODUCTION")
+cur.execute("CREATE SCHEMA IF NOT EXISTS PUBLIC")
 
-# Create curated table with KPIs
+# Transform data from staging → production
 cur.execute("""
-CREATE OR REPLACE TABLE CURATED.CAMPAIGN_DAILY_METRICS AS
+CREATE OR REPLACE TABLE PRODUCTION.CAMPAIGN_DAILY_METRICS AS
 SELECT
     CAMPAIGN_ID,
     ADSET_ID,
@@ -38,10 +39,17 @@ SELECT
 FROM STAGING.ADS_DATA_STG;
 """)
 
-# verify row count
-cur.execute("SELECT COUNT(*) FROM CURATED.CAMPAIGN_DAILY_METRICS")
+# Create a public view for reporting
+cur.execute("""
+CREATE OR REPLACE VIEW PUBLIC.CAMPAIGN_DAILY_METRICS_VIEW AS
+SELECT * FROM PRODUCTION.CAMPAIGN_DAILY_METRICS;
+""")
+
+# Verify row count in production table
+cur.execute("SELECT COUNT(*) FROM PRODUCTION.CAMPAIGN_DAILY_METRICS")
 count = cur.fetchone()[0]
-print("Rows in curated table:", count)
+print("Rows in production table:", count)
 
 cur.close()
 sconn.close()
+print("Staging → Production transformation and public view creation completed successfully!")
