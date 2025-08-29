@@ -11,22 +11,21 @@ This project demonstrates a realistic **DSP/AdTech** data pipeline:
 
 ### High-level Architecture
 
-
-
+```
 (Synthetic Ad Events CSV)
-│
-▼
-Oracle (Staging)
-│ Extract via Python
-▼
-Snowflake (Staging)
-│ Transform SQL
-▼
-Snowflake (Production/Curated)
-│
-▼
-BI / SQL Analysis
-
+           │
+           ▼
+       Oracle (Staging)
+           │  Extract via Python
+           ▼
+     Snowflake (Staging)
+           │  Transform SQL
+           ▼
+   Snowflake (Curated/Data Marts)
+           │
+           ▼
+      BI / SQL Analysis
+```
 
 ### Dataset
 This repo uses a **synthetic AdTech dataset** (campaign/adset/creative daily metrics).
@@ -48,30 +47,31 @@ Columns: `campaign_id, adset_id, creative_id, date, impressions, clicks, spend, 
 
 ## Recommended Repo Structure
 
-
-
+```
 oracle-to-snowflake-etl/
 ├─ README.md
 ├─ .gitignore
-├─ .env # not committed
+├─ .env                  # not committed
 ├─ data/
-│ └─ ads_data_YYYY-MM-DDA.csv # generated CSV with suffix
+│  └─ ads_data.csv       # generated 
 ├─ analytics_reports/
-│ └─ analytics_report.ipynb
+│  └─ analytics_report.ipynb
 └─ scripts/
-├─ generate_ads_data.py
-├─ insert_ads_data.py
-├─ oracle_to_snowflake.py
-└─ transform_staging.py
+   ├─ generate_ads_data.py
+   ├─ insert_ads_data.py
+   ├─ oracle_to_snowflake.py
+   └─ transform_curated.py
+```
+## Recommended Repo Structure
+
 
 ### .gitignore (important)
-
-
+```
 .env
-pycache/
+__pycache__/
 .ipynb_checkpoints/
 data/*.csv
-
+```
 
 <!-- ========== END BLOCK 2 ========== -->
 
@@ -91,62 +91,69 @@ sudo docker run --name oracle-free -p 1521:1521 -d \
   -e APP_USER=APP_USER \
   -e APP_USER_PASSWORD=ChangeMe123 \
   gvenzl/oracle-free
-
+```
 
 Check logs until you see "DATABASE IS READY TO USE!":
-
+```bash
 sudo docker logs -f oracle-free
+```
 
-Create Oracle table (optional quick check from container)
+### Create Oracle table (optional quick check from container)
+```bash
 sudo docker exec -it oracle-free sqlplus APP_USER/ChangeMe123@localhost:1521/FREEPDB1
 
 -- inside SQL*Plus:
+-- this table will later be bulk-loaded from CSV
 CREATE TABLE ADS_DATA (
   CAMPAIGN_ID NUMBER,
   ADSET_ID    NUMBER,
   CREATIVE_ID NUMBER,
-  EVENT_DATE  DATE,
+  DT          DATE,
   IMPRESSIONS NUMBER,
   CLICKS      NUMBER,
   SPEND       NUMBER(10,2),
   CONVERSIONS NUMBER
 );
 EXIT;
+```
 
+> Connection DSN: `localhost:1521/FREEPDB1` (user `APP_USER`, pass `ChangeMe123`)
 
-Connection DSN: localhost:1521/FREEPDB1 (user APP_USER, pass ChangeMe123)
+<!-- ========== END BLOCK 3 ========== -->
 
-<!-- ========== END BLOCK 3 ========== --> <!-- ========== BLOCK 4: SYNTHETIC DATA GENERATION ========== -->
-Step 2 — Generate Synthetic AdTech Dataset
+<!-- ========== BLOCK 4: SYNTHETIC DATA GENERATION ========== -->
+
+## Step 2 — Generate Synthetic AdTech Dataset
 
 Install Python deps (project root):
-
+```bash
 pip install pandas numpy jupyter
+```
 
-
-Create scripts/generate_ads_data.py with:
-
+Create `scripts/generate_data.py` with:
+```python
 import pandas as pd
+import numpy as np
 import random
 from datetime import datetime, timedelta
-import os
+from pathlib import Path
 
 num_campaigns = 50
 num_adsets_per_campaign = 5
 num_creatives_per_adset = 3
-num_days = 60
+num_days = 60  # last 60 days
 
 rows = []
 start_date = datetime.today() - timedelta(days=num_days)
 
-for campaign_id in range(1, num_campaigns+1):
-    for adset_id in range(1, num_adsets_per_campaign+1):
-        for creative_id in range(1, num_creatives_per_adset+1):
+for campaign_id in range(1, num_campaigns + 1):
+    for adset_id in range(1, num_adsets_per_campaign + 1):
+        for creative_id in range(1, num_creatives_per_adset + 1):
             for day in range(num_days):
                 date = start_date + timedelta(days=day)
-                impressions = random.randint(500,5000)
-                clicks = random.randint(0,int(impressions*0.2))
-                spend = round(random.uniform(10,200),2)
+                impressions = random.randint(500, 5000)
+                clicks = random.randint(0, int(impressions * 0.2))
+                spend = round(random.uniform(10, 200), 2)
                 conversions = random.randint(0, clicks)
                 rows.append([
                     campaign_id, adset_id, creative_id,
@@ -159,244 +166,271 @@ df = pd.DataFrame(rows, columns=[
     "impressions","clicks","spend","conversions"
 ])
 
-os.makedirs("../data", exist_ok=True)
+Path("data").mkdir(exist_ok=True)
+df.to_csv("data/ads_data.csv", index=False)
+print("Generated data/data/ads_data.csv with rows:", len(df))
+```
 
-# CSV filename with suffix logic
-base_name = f"ads_data_{datetime.today().strftime('%Y-%m-%d')}"
-suffix = "A"
-while os.path.exists(f"../data/{base_name}{suffix}.csv"):
-    suffix = chr(ord(suffix)+1)
-csv_file = f"../data/{base_name}{suffix}.csv"
-df.to_csv(csv_file, index=False)
-print("Generated:", csv_file, "Rows:", len(df))
+Run the generator:
+```bash
+python scripts/generate_data.py
+```
 
+<!-- ========== END BLOCK 4 ========== -->
 
-Run:
+<!-- ========== BLOCK 5: LOAD CSV INTO ORACLE ========== -->
 
-python scripts/generate_ads_data.py
-
-<!-- ========== END BLOCK 4 ========== --> <!-- ========== BLOCK 5: LOAD CSV INTO ORACLE ========== -->
-Step 3 — Load CSV into Oracle
+## Step 3 — Load CSV into Oracle (from Jupyter or Python)
 
 Install Oracle driver:
-
+```bash
 pip install oracledb
+```
 
-
-insert_ads_data.py (idempotent + duplicate check):
-
+In `notebooks/etl_pipeline.ipynb` (or a quick script), run:
+```python
 import pandas as pd
 import oracledb
-import os
 
-data_folder = "../data"
-csv_files = sorted([f for f in os.listdir(data_folder) if f.startswith("ads_data_") and f.endswith(".csv")])
-latest_csv = os.path.join(data_folder, csv_files[-1])
+df = pd.read_csv("data/ads_data.csv")
 
-df = pd.read_csv(latest_csv)
-print("Using CSV:", latest_csv, "Rows:", len(df))
-
-conn = oracledb.connect(user="APP_USER", password="ChangeMe123", dsn="localhost:1521/FREEPDB1")
+conn = oracledb.connect(user="APP_USER", password="ChangeMe123",
+                        dsn="localhost:1521/FREEPDB1")
 cur = conn.cursor()
 
-# fetch existing keys to avoid duplicates
-cur.execute("SELECT CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, EVENT_DATE FROM ADS_DATA")
-existing_rows = cur.fetchall()
-existing_df = pd.DataFrame(existing_rows, columns=['campaign_id','adset_id','creative_id','date'])
-existing_df['date'] = pd.to_datetime(existing_df['date'])
-df['date'] = pd.to_datetime(df['date'])
+# ensure table exists (idempotent create)
+cur.execute("""
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE TABLE ADS_DATA (
+    CAMPAIGN_ID NUMBER,
+    ADSET_ID    NUMBER,
+    CREATIVE_ID NUMBER,
+    DT          DATE,
+    IMPRESSIONS NUMBER,
+    CLICKS      NUMBER,
+    SPEND       NUMBER(10,2),
+    CONVERSIONS NUMBER
+  )';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLCODE != -955 THEN RAISE; END IF; -- -955 = name already used
+END;
+""")
 
-# keep only new rows
-merged = df.merge(existing_df, on=['campaign_id','adset_id','creative_id','date'], how='left', indicator=True)
-df_new = merged[merged['_merge']=='left_only'].drop(columns=['_merge'])
-print("New rows to insert:", len(df_new))
+# bulk insert
+rows = [
+    (int(r.campaign_id), int(r.adset_id), int(r.creative_id),
+     r.date, int(r.impressions), int(r.clicks), float(r.spend), int(r.conversions))
+    for r in df.itertuples(index=False)
+]
+cur.executemany("""
+  INSERT INTO ADS_DATA
+  (CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, DT, IMPRESSIONS, CLICKS, SPEND, CONVERSIONS)
+  VALUES (:1, :2, :3, TO_DATE(:4, 'YYYY-MM-DD'), :5, :6, :7, :8)
+""", rows)
 
-for _, row in df_new.iterrows():
-    cur.execute("""
-        INSERT INTO ADS_DATA (CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, EVENT_DATE, IMPRESSIONS, CLICKS, SPEND, CONVERSIONS)
-        VALUES (:1,:2,:3,TO_DATE(:4,'YYYY-MM-DD'),:5,:6,:7,:8)
-    """, (int(row['campaign_id']), int(row['adset_id']), int(row['creative_id']),
-          row['date'].strftime('%Y-%m-%d'), int(row['impressions']),
-          int(row['clicks']), float(row['spend']), int(row['conversions'])))
 conn.commit()
+print("Loaded rows:", len(rows))
+
+# quick sanity check
+cur.execute("SELECT COUNT(*) FROM ADS_DATA")
+print("Oracle ADS_DATA count:", cur.fetchone()[0])
+
 cur.close()
 conn.close()
+```
 
-<!-- ========== END BLOCK 5 ========== --> <!-- ========== BLOCK 6: SNOWFLAKE CONNECTOR & STAGING LOAD ========== -->
-Step 4 — Oracle → Snowflake (Staging)
+<!-- ========== END BLOCK 5 ========== -->
 
-.env:
+<!-- ========== BLOCK 6: ENV & SNOWFLAKE CONNECTOR ========== -->
 
+## Step 4 — Env Variables & Snowflake Connector
+
+Install deps:
+```bash
+pip install snowflake-connector-python python-dotenv
+```
+
+Create `.env` (do NOT commit this file):
+```env
+# Oracle
 ORACLE_USER=APP_USER
 ORACLE_PASSWORD=ChangeMe123
 ORACLE_DSN=localhost:1521/FREEPDB1
 
-SNOWFLAKE_USER=<user>
-SNOWFLAKE_PASSWORD=<pass>
-SNOWFLAKE_ACCOUNT=<account>
+# Snowflake
+SNOWFLAKE_USER=your_username
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_ACCOUNT=your_account  # e.g. abcd-xy123
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-SNOWFLAKE_DATABASE=ORACLE_ETL
+SNOWFLAKE_DATABASE=ETL_DB
 SNOWFLAKE_SCHEMA=STAGING
+```
 
+Add to `.gitignore` (already above):
+```
+.env
+```
 
-scripts/oracle_to_snowflake.py:
+<!-- ========== END BLOCK 6 ========== -->
 
-import os, pandas as pd, oracledb, snowflake.connector
+<!-- ========== BLOCK 7: SNOWFLAKE STAGING LOAD ========== -->
+
+## Step 5 — Create Snowflake objects & Load Staging
+
+In Snowflake Worksheet (or via Python), run:
+```sql
+CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH WITH WAREHOUSE_SIZE='XSMALL' AUTO_SUSPEND=60 AUTO_RESUME=TRUE;
+CREATE DATABASE IF NOT EXISTS ETL_DB;
+CREATE SCHEMA IF NOT EXISTS ETL_DB.STAGING;
+
+-- Staging table (matches Oracle ADS_DATA)
+CREATE OR REPLACE TABLE ETL_DB.STAGING.ADS_DATA_STG (
+  CAMPAIGN_ID NUMBER,
+  ADSET_ID    NUMBER,
+  CREATIVE_ID NUMBER,
+  DT          DATE,
+  IMPRESSIONS NUMBER,
+  CLICKS      NUMBER,
+  SPEND       NUMBER(10,2),
+  CONVERSIONS NUMBER
+);
+```
+
+Now from Notebook, **extract Oracle → load to Snowflake**:
+```python
+import os
+import pandas as pd
+import oracledb, snowflake.connector
 from dotenv import load_dotenv
-from datetime import datetime
-import warnings
 
-warnings.filterwarnings('ignore', category=UserWarning)
 load_dotenv()
 
+# Oracle → DataFrame
 oconn = oracledb.connect(user=os.getenv("ORACLE_USER"),
                          password=os.getenv("ORACLE_PASSWORD"),
                          dsn=os.getenv("ORACLE_DSN"))
 df = pd.read_sql("SELECT * FROM ADS_DATA", oconn)
 oconn.close()
 
-df.rename(columns={'EVENT_DATE':'DT'}, inplace=True)
-df['DT'] = pd.to_datetime(df['DT'])
-
+# Connect Snowflake
 sconn = snowflake.connector.connect(
     user=os.getenv("SNOWFLAKE_USER"),
     password=os.getenv("SNOWFLAKE_PASSWORD"),
     account=os.getenv("SNOWFLAKE_ACCOUNT"),
     warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
     database=os.getenv("SNOWFLAKE_DATABASE"),
-    schema=os.getenv("SNOWFLAKE_SCHEMA")
+    schema=os.getenv("SNOWFLAKE_SCHEMA"),
 )
 cur = sconn.cursor()
-cur.execute("""
-CREATE TABLE IF NOT EXISTS ADS_DATA_STG (
-    CAMPAIGN_ID NUMBER,
-    ADSET_ID NUMBER,
-    CREATIVE_ID NUMBER,
-    DT DATE,
-    IMPRESSIONS NUMBER,
-    CLICKS NUMBER,
-    SPEND NUMBER(10,2),
-    CONVERSIONS NUMBER
-)
-""")
 
-existing_keys_df = pd.read_sql("SELECT CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, DT FROM ADS_DATA_STG", sconn)
-existing_keys_df['DT'] = pd.to_datetime(existing_keys_df['DT'])
+# Clear & load
+cur.execute("TRUNCATE TABLE IF EXISTS ADS_DATA_STG")
+# use executemany for simplicity (for larger data consider write_pandas)
+rows = [tuple(x) for x in df.itertuples(index=False, name=None)]
+cur.executemany("""
+  INSERT INTO ADS_DATA_STG
+  (CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, DT, IMPRESSIONS, CLICKS, SPEND, CONVERSIONS)
+  VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+""", rows)
+sconn.commit()
 
-df_new = df.merge(existing_keys_df, on=['CAMPAIGN_ID','ADSET_ID','CREATIVE_ID','DT'], how='left', indicator=True)
-df_new = df_new[df_new['_merge']=='left_only'].drop(columns=['_merge'])
+# sanity check
+cur.execute("SELECT COUNT(*) FROM ADS_DATA_STG")
+print("Snowflake staging count:", cur.fetchone()[0])
 
-rows_sf = [(int(r.CAMPAIGN_ID), int(r.ADSET_ID), int(r.CREATIVE_ID),
-            r.DT.strftime("%Y-%m-%d"), int(r.IMPRESSIONS), int(r.CLICKS),
-            float(r.SPEND), int(r.CONVERSIONS)) for r in df_new.itertuples(index=False)]
-if rows_sf:
-    cur.executemany("""
-        INSERT INTO ADS_DATA_STG
-        (CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, DT, IMPRESSIONS, CLICKS, SPEND, CONVERSIONS)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-    """, rows_sf)
-    sconn.commit()
 cur.close()
 sconn.close()
+```
 
-<!-- ========== END BLOCK 6 ========== --> <!-- ========== BLOCK 7: TRANSFORM STAGING → PRODUCTION ========== -->
-Step 5 — Transform Staging → Production (Curated)
+> Tip: For very large loads, consider `write_pandas` utility or Snowflake **stages** + **COPY INTO**.
 
-scripts/transform_staging.py:
+<!-- ========== END BLOCK 7 ========== -->
 
-import os
-import snowflake.connector
-from dotenv import load_dotenv
+<!-- ========== BLOCK 8: TRANSFORM TO CURATED TABLES ========== -->
 
-load_dotenv()
-sconn = snowflake.connector.connect(
-    user=os.getenv("SNOWFLAKE_USER"),
-    password=os.getenv("SNOWFLAKE_PASSWORD"),
-    account=os.getenv("SNOWFLAKE_ACCOUNT"),
-    warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-    database=os.getenv("SNOWFLAKE_DATABASE"),
-    schema=os.getenv("SNOWFLAKE_SCHEMA")
-)
-cur = sconn.cursor()
-cur.execute("CREATE SCHEMA IF NOT EXISTS PRODUCTION")
-cur.execute("""
-CREATE OR REPLACE TABLE PRODUCTION.CAMPAIGN_DAILY_METRICS AS
+## Step 6 — Transform Staging → Curated (Snowflake SQL)
+
+Create curated table with common KPIs:
+```sql
+CREATE SCHEMA IF NOT EXISTS ETL_DB.CURATED;
+
+CREATE OR REPLACE TABLE ETL_DB.CURATED.CAMPAIGN_DAILY_METRICS AS
 SELECT
-    CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, DT, IMPRESSIONS, CLICKS, SPEND, CONVERSIONS,
-    IFF(NULLIF(IMPRESSIONS,0) IS NULL,0,CLICKS/IMPRESSIONS::FLOAT) AS CTR,
-    IFF(NULLIF(IMPRESSIONS,0) IS NULL,0,(SPEND/IMPRESSIONS)*1000) AS CPM,
-    IFF(NULLIF(CLICKS,0) IS NULL,0,SPEND/CLICKS) AS CPC,
-    IFF(NULLIF(CONVERSIONS,0) IS NULL,0,SPEND/CONVERSIONS) AS CPA
-FROM STAGING.ADS_DATA_STG
-""")
-cur.close()
-sconn.close()
+  CAMPAIGN_ID,
+  ADSET_ID,
+  CREATIVE_ID,
+  DT,
+  IMPRESSIONS,
+  CLICKS,
+  SPEND,
+  CONVERSIONS,
+  IFF(NULLIF(IMPRESSIONS,0) IS NULL, 0, CLICKS/IMPRESSIONS::FLOAT)    AS CTR,
+  IFF(NULLIF(IMPRESSIONS,0) IS NULL, 0, (SPEND/IMPRESSIONS)*1000)      AS CPM,
+  IFF(NULLIF(CLICKS,0) IS NULL, 0, SPEND/CLICKS)                        AS CPC,
+  IFF(NULLIF(CONVERSIONS,0) IS NULL, 0, SPEND/CONVERSIONS)              AS CPA
+FROM ETL_DB.STAGING.ADS_DATA_STG;
+```
 
-<!-- ========== END BLOCK 7 ========== --> <!-- ========== BLOCK 8: ANALYTICS & VISUALS ========== -->
-Step 6 — Analytics (Python/Matplotlib/Seaborn)
+Optional **daily refresh** pattern (truncate+insert):
+```sql
+TRUNCATE TABLE ETL_DB.CURATED.CAMPAIGN_DAILY_METRICS;
+INSERT INTO ETL_DB.CURATED.CAMPAIGN_DAILY_METRICS
+SELECT
+  CAMPAIGN_ID, ADSET_ID, CREATIVE_ID, DT, IMPRESSIONS, CLICKS, SPEND, CONVERSIONS,
+  IFF(NULLIF(IMPRESSIONS,0) IS NULL, 0, CLICKS/IMPRESSIONS::FLOAT),
+  IFF(NULLIF(IMPRESSIONS,0) IS NULL, 0, (SPEND/IMPRESSIONS)*1000),
+  IFF(NULLIF(CLICKS,0) IS NULL, 0, SPEND/CLICKS),
+  IFF(NULLIF(CONVERSIONS,0) IS NULL, 0, SPEND/CONVERSIONS)
+FROM ETL_DB.STAGING.ADS_DATA_STG;
+```
 
-scripts/analytics_report.py:
+<!-- ========== END BLOCK 8 ========== -->
 
-import os, pandas as pd, snowflake.connector
-import matplotlib.pyplot as plt
-import seaborn as sns
-from dotenv import load_dotenv
+<!-- ========== BLOCK 9: ANALYTICS QUERIES ========== -->
 
-load_dotenv()
-sns.set(style="whitegrid")
-plt.rcParams["figure.figsize"] = (12,6)
+## Step 7 — Sample Analytics
 
-conn = snowflake.connector.connect(
-    user=os.getenv("SNOWFLAKE_USER"),
-    password=os.getenv("SNOWFLAKE_PASSWORD"),
-    account=os.getenv("SNOWFLAKE_ACCOUNT"),
-    warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-    database=os.getenv("SNOWFLAKE_DATABASE"),
-    schema=os.getenv("SNOWFLAKE_SCHEMA")
-)
-cur = conn.cursor()
-def fetch_df(q): cur.execute(q); return pd.DataFrame(cur.fetchall(),columns=[d[0] for d in cur.description])
-
-top_campaigns = fetch_df("""
+Top campaigns by spend (last 14 days):
+```sql
 SELECT CAMPAIGN_ID, SUM(SPEND) AS TOTAL_SPEND
-FROM PRODUCTION.CAMPAIGN_DAILY_METRICS
-WHERE DT >= DATEADD('day',-14,CURRENT_DATE)
+FROM ETL_DB.CURATED.CAMPAIGN_DAILY_METRICS
+WHERE DT >= DATEADD('day', -14, CURRENT_DATE)
 GROUP BY CAMPAIGN_ID
 ORDER BY TOTAL_SPEND DESC
-LIMIT 10
-""")
-sns.barplot(data=top_campaigns,x="CAMPAIGN_ID",y="TOTAL_SPEND")
-plt.title("Top 10 Campaigns by Spend (Last 14 Days)")
-plt.show()
-cur.close()
-conn.close()
+LIMIT 10;
+```
 
-<!-- ========== END BLOCK 8 ========== --> <!-- ========== BLOCK 9: SECURITY & TROUBLESHOOTING ========== -->
-Security & Notes
+Campaign CTR trend:
+```sql
+SELECT DT, AVG(CTR) AS AVG_CTR
+FROM ETL_DB.CURATED.CAMPAIGN_DAILY_METRICS
+GROUP BY DT
+ORDER BY DT;
+```
 
-.env is never committed.
-
-Dataset is synthetic for learning only.
-
-Credentials read via environment variables.
-
-Troubleshooting
-
-Docker permissions → use sudo or add user to docker group.
-
-Oracle DSN/connect errors → ensure container is Up.
-
-Snowflake auth → verify account, warehouse, user, password.
-
-Large loads → use write_pandas or Snowflake stage + COPY INTO.
+Creative performance:
+```sql
+SELECT CREATIVE_ID, SUM(IMPRESSIONS) AS IMPS, SUM(CLICKS) AS CLKS, AVG(CPC) AS AVG_CPC
+FROM ETL_DB.CURATED.CAMPAIGN_DAILY_METRICS
+GROUP BY CREATIVE_ID
+ORDER BY IMPS DESC
+LIMIT 10;
+```
 
 <!-- ========== END BLOCK 9 ========== -->
 
----
+<!-- ========== BLOCK 10: SECURITY & TROUBLESHOOTING ========== -->
 
-Tum ise **direct copy paste** kar sakte ho README.md me.  
-Ye updated hai:  
+## Security & Notes
+- **Do NOT commit `.env`** (already in `.gitignore`).
+- Credentials are read from `.env` via environment variables.
+- This is a learning project; dataset is synthetic.
 
-- Staging → Production schema flow added (`transform_staging.py`)  
-- `.env` updated for `ORACLE_ETL` DB and `STAGING` schema  
-- Analytics scripts updated to point **Production.CAMPAIGN_DAILY_METRICS**  
+## Troubleshooting
+- Docker permission issue → run `sudo docker ...` or add user to `docker` group.
+- Oracle connect error → ensure container is Up and DSN = `localhost:1521/FREEPDB1`.
+- Snowflake auth error → verify `SNOWFLAKE_ACCOUNT` (e.g., `xy12345.ap-south-1` style), user, warehouse.
+- Large loads → prefer `write_pandas` or external stage + `COPY INTO`.
+
+<!-- ========== END BLOCK 10 ========== -->
